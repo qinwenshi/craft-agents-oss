@@ -71,6 +71,15 @@ function sanitizeForTitle(content: string): string {
 }
 
 /**
+ * Derive workspace slug (folder name) from workspace root path.
+ * Falls back to workspace ID when path parsing fails.
+ */
+function getWorkspaceSlugFromRootPath(rootPath: string, fallbackId: string): string {
+  const parts = rootPath.split('/').filter(Boolean)
+  return parts[parts.length - 1] || fallbackId
+}
+
+/**
  * Normalize user-provided working directory input.
  *
  * Goals:
@@ -685,6 +694,16 @@ export class SessionManager {
         const skills = loadWorkspaceSkills(workspaceRootPath)
         this.broadcastSkillsChanged(skills)
       },
+      onWorkersListChange: async (workers) => {
+        sessionLog.info(`Workers list changed in ${workspaceRootPath} (${workers.length} workers)`)
+        this.broadcastWorkersChanged(workers)
+      },
+      onWorkerChange: async (slug, worker) => {
+        sessionLog.info(`Worker '${slug}' changed:`, worker ? 'updated' : 'deleted')
+        const { loadWorkspaceWorkers } = await import('@craft-agent/shared/workers')
+        const workers = loadWorkspaceWorkers(workspaceRootPath)
+        this.broadcastWorkersChanged(workers)
+      },
 
       // Session metadata changes (external edits to session.jsonl headers).
       // Detects label/flag/name/todoState changes made by other instances or scripts.
@@ -785,6 +804,15 @@ export class SessionManager {
     if (!this.windowManager) return
     sessionLog.info(`Broadcasting skills changed (${skills.length} skills)`)
     this.windowManager.broadcastToAll(IPC_CHANNELS.SKILLS_CHANGED, skills)
+  }
+
+  /**
+   * Broadcast workers changed event to all windows
+   */
+  private broadcastWorkersChanged(workers: import('@craft-agent/shared/workers').LoadedWorker[]): void {
+    if (!this.windowManager) return
+    sessionLog.info(`Broadcasting workers changed (${workers.length} workers)`)
+    this.windowManager.broadcastToAll(IPC_CHANNELS.WORKERS_CHANGED, workers)
   }
 
   /**
@@ -2577,6 +2605,91 @@ export class SessionManager {
     sessionLog.info(`Deleted session ${sessionId}`)
   }
 
+  /**
+   * Prepare worker command context (if any) and return the message that should
+   * be sent to the agent, plus merged send options/badges.
+   */
+  private async prepareWorkerMessage(
+    managed: ManagedSession,
+    message: string,
+    options?: SendMessageOptions
+  ): Promise<{ agentMessage: string; effectiveOptions?: SendMessageOptions }> {
+    const effectiveOptions: SendMessageOptions | undefined = options
+      ? {
+          ...options,
+          badges: options.badges ? [...options.badges] : undefined,
+        }
+      : undefined
+
+    // Renderer may already provide a transformed worker message.
+    if (effectiveOptions?.workerInvocation?.transformedMessage) {
+      return {
+        agentMessage: effectiveOptions.workerInvocation.transformedMessage,
+        effectiveOptions,
+      }
+    }
+
+    if (!message.trimStart().startsWith('/')) {
+      return { agentMessage: message, effectiveOptions }
+    }
+
+    const {
+      loadAllWorkers,
+      resolveWorkerInvocation,
+      buildWorkerInvocationMessage,
+      formatWorkerCommandBadgeLabel,
+    } = await import('@craft-agent/shared/workers')
+
+    const workers = loadAllWorkers(managed.workspace.rootPath, managed.workingDirectory)
+    const invocation = resolveWorkerInvocation(message, workers, {
+      // Keep SDK native slash commands untouched.
+      reservedCommands: ['/compact'],
+    })
+    if (!invocation) {
+      return { agentMessage: message, effectiveOptions }
+    }
+
+    const workspaceSlug = getWorkspaceSlugFromRootPath(managed.workspace.rootPath, managed.workspace.id)
+    const transformedMessage = buildWorkerInvocationMessage(invocation, { workspaceSlug })
+
+    const mergedOptions: SendMessageOptions = {
+      ...(effectiveOptions ?? {}),
+      workerInvocation: {
+        workerSlug: invocation.worker.slug,
+        workerName: invocation.worker.metadata.name,
+        command: invocation.command.command,
+        commandDescription: invocation.command.description,
+        prompt: invocation.prompt,
+        skillSlugs: invocation.worker.skills,
+        transformedMessage,
+      },
+    }
+
+    const currentBadges = [...(mergedOptions.badges ?? [])]
+    const hasWorkerCommandBadge = currentBadges.some((badge) =>
+      badge.type === 'command'
+      && badge.rawText === invocation.rawCommandText
+      && badge.start === invocation.commandStart
+    )
+
+    if (!hasWorkerCommandBadge) {
+      currentBadges.unshift({
+        type: 'command',
+        label: formatWorkerCommandBadgeLabel(invocation),
+        rawText: invocation.rawCommandText,
+        start: invocation.commandStart,
+        end: invocation.commandEnd,
+      })
+    }
+
+    mergedOptions.badges = currentBadges.length > 0 ? currentBadges : undefined
+
+    return {
+      agentMessage: transformedMessage,
+      effectiveOptions: mergedOptions,
+    }
+  }
+
   async sendMessage(sessionId: string, message: string, attachments?: FileAttachment[], storedAttachments?: StoredAttachment[], options?: SendMessageOptions, existingMessageId?: string, _isAuthRetry?: boolean): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
@@ -2591,6 +2704,8 @@ export class SessionManager {
     // Ensure messages are loaded before we try to add new ones
     await this.ensureMessagesLoaded(managed)
 
+    const { agentMessage, effectiveOptions } = await this.prepareWorkerMessage(managed, message, options)
+
     // If currently processing, queue the message and interrupt via forceAbort.
     // The abort throws an AbortError (caught in the catch block) which calls
     // onProcessingStopped → processNextQueuedMessage to drain the queue.
@@ -2604,14 +2719,20 @@ export class SessionManager {
         content: message,
         timestamp: Date.now(),
         attachments: storedAttachments,
-        badges: options?.badges,
+        badges: effectiveOptions?.badges,
       }
 
       // Add to messages immediately so it's persisted
       managed.messages.push(queuedMessage)
 
       // Queue the message info (with the generated ID for later matching)
-      managed.messageQueue.push({ message, attachments, storedAttachments, options, messageId: queuedMessage.id })
+      managed.messageQueue.push({
+        message,
+        attachments,
+        storedAttachments,
+        options: effectiveOptions,
+        messageId: queuedMessage.id,
+      })
 
       // Emit user_message event so UI can show queued state
       this.sendEvent({
@@ -2645,7 +2766,7 @@ export class SessionManager {
         content: message,
         timestamp: Date.now(),
         attachments: storedAttachments, // Include for persistence (has thumbnailBase64)
-        badges: options?.badges,  // Include content badges (sources, skills with embedded icons)
+        badges: effectiveOptions?.badges,  // Include content badges (sources, skills with embedded icons)
       }
       managed.messages.push(userMessage)
 
@@ -2667,8 +2788,8 @@ export class SessionManager {
         // Replace bracket mentions with their display labels (e.g. [skill:ws:commit] → "Commit")
         // so titles show human-readable names instead of raw IDs
         let titleSource = message
-        if (options?.badges) {
-          for (const badge of options.badges) {
+        if (effectiveOptions?.badges) {
+          for (const badge of effectiveOptions.badges) {
             if (badge.rawText && badge.label) {
               titleSource = titleSource.replace(badge.rawText, badge.label)
             }
@@ -2811,12 +2932,15 @@ export class SessionManager {
       sessionLog.info('Starting chat for session:', sessionId)
       sessionLog.info('Workspace:', JSON.stringify(managed.workspace, null, 2))
       sessionLog.info('Message:', message)
+      if (agentMessage !== message) {
+        sessionLog.info('Message transformed by worker command context')
+      }
       sessionLog.info('Agent model:', agent.getModel())
       sessionLog.info('process.cwd():', process.cwd())
 
       // Set ultrathink override if enabled (single-shot - resets after query)
       // This boosts the session's thinkingLevel to 'max' for this message only
-      if (options?.ultrathinkEnabled) {
+      if (effectiveOptions?.ultrathinkEnabled) {
         sessionLog.info('Ultrathink override ENABLED')
         agent.setUltrathinkOverride(true)
       }
@@ -2827,13 +2951,11 @@ export class SessionManager {
         sessionLog.info('Attachments:', attachments.length)
       }
 
-      // Skills mentioned via @mentions are handled by the SDK's Skill tool.
-      // The UI layer (extractBadges in mentions.ts) injects fully-qualified names
-      // in the rawText, and canUseTool in craft-agent.ts provides a fallback
-      // to qualify short names. No transformation needed here.
+      // Skill mentions and worker-command wrappers are already embedded in
+      // agentMessage by renderer/main preprocessing.
 
       sendSpan.mark('chat.starting')
-      const chatIterator = agent.chat(message, attachments)
+      const chatIterator = agent.chat(agentMessage, attachments)
       sessionLog.info('Got chat iterator, starting iteration...')
 
       for await (const event of chatIterator) {

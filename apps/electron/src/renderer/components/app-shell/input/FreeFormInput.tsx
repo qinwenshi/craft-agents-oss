@@ -62,7 +62,7 @@ import { useOptionalAppShellContext } from '@/context/AppShellContext'
 import { EditPopover, getEditConfig } from '@/components/ui/EditPopover'
 import { SourceAvatar } from '@/components/ui/source-avatar'
 import { FreeFormInputContextBadge } from './FreeFormInputContextBadge'
-import type { FileAttachment, LoadedSource, LoadedSkill } from '../../../../shared/types'
+import type { FileAttachment, LoadedSource, LoadedSkill, LoadedWorker } from '../../../../shared/types'
 import type { PermissionMode } from '@craft-agent/shared/agent/modes'
 import { PERMISSION_MODE_ORDER } from '@craft-agent/shared/agent/modes'
 import { type ThinkingLevel, THINKING_LEVELS, getThinkingLevelName } from '@craft-agent/shared/agent/thinking-levels'
@@ -90,7 +90,7 @@ const cmdKey = isMac ? '⌘' : 'Ctrl'
 const DEFAULT_PLACEHOLDERS = [
   'What would you like to work on?',
   'Use Shift + Tab to switch between Explore and Execute',
-  'Type @ to mention files, folders, or skills',
+  'Type @ to mention workers, files, folders, or skills',
   'Type # to apply labels to this conversation',
   'Press Shift + Return to add a new line',
   `Press ${cmdKey} + B to toggle the sidebar`,
@@ -157,6 +157,8 @@ export interface FreeFormInputProps {
   // Skill selection (for @mentions)
   /** Available skills for @mention autocomplete */
   skills?: LoadedSkill[]
+  /** Available workers for @mention autocomplete */
+  workers?: LoadedWorker[]
   // Label selection (for #labels)
   /** Available labels for #label autocomplete */
   labels?: LabelConfig[]
@@ -228,6 +230,7 @@ export function FreeFormInput({
   enabledSourceSlugs = [],
   onSourcesChange,
   skills = [],
+  workers = [],
   labels = [],
   sessionLabels = [],
   onLabelAdd,
@@ -675,7 +678,7 @@ export function FreeFormInput({
     homeDir,
   })
 
-  // Handle mention selection (sources, skills, files)
+  // Handle mention selection (sources, workers, skills, files)
   const handleMentionSelect = React.useCallback((item: MentionItem) => {
     // For sources: enable the source immediately
     if (item.type === 'source' && item.source && onSourcesChange) {
@@ -691,11 +694,12 @@ export function FreeFormInput({
     // Skills also don't need special handling beyond text insertion.
   }, [optimisticSourceSlugs, onSourcesChange])
 
-  // Inline mention hook (for skills, sources, and files)
+  // Inline mention hook (for workers, skills, sources, and files)
   const inlineMention = useInlineMention({
     inputRef: richInputRef,
     skills,
     sources,
+    workers,
     basePath: workingDirectory ? normalizeWorkingDirCandidate(workingDirectory) : undefined,
     onSelect: handleMentionSelect,
     // Use workspace slug (not UUID) for SDK skill qualification
@@ -964,7 +968,7 @@ export function FreeFormInput({
     // Tutorial may disable sending to guide user through specific steps
     if (disableSend) return false
 
-    // Parse all @mentions (skills, sources, folders)
+    // Parse all @mentions (skills, sources, workers, folders)
     const skillSlugs = skills.map(s => s.slug)
     const sourceSlugs = sources.map(s => s.config.slug)
     const mentions = parseMentions(input, skillSlugs, sourceSlugs)
@@ -1127,7 +1131,7 @@ export function FreeFormInput({
     // Update inline slash command state
     inlineSlash.handleInputChange(value, cursorPosition)
 
-    // Update inline mention state (for @mentions - skills, sources, folders)
+    // Update inline mention state (for @mentions - workers, skills, sources, folders)
     inlineMention.handleInputChange(value, cursorPosition)
 
     // Update inline label state (for #labels)
@@ -1315,6 +1319,7 @@ export function FreeFormInput({
           disabled={disabled}
           skills={skills}
           sources={sources}
+          workers={workers}
           workspaceId={workspaceId}
           className="pl-5 pr-4 pt-4 pb-3 overflow-y-auto min-h-[88px]"
           style={{ maxHeight: inputMaxHeight }}

@@ -2357,6 +2357,24 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
   })
 
   // ============================================================
+  // Workers (Workspace-scoped)
+  // ============================================================
+
+  // Get all workers for a workspace (and optionally project-level workers from workingDirectory)
+  ipcMain.handle(IPC_CHANNELS.WORKERS_GET, async (_event, workspaceId: string, workingDirectory?: string) => {
+    ipcLog.info(`WORKERS_GET: Loading workers for workspace: ${workspaceId}${workingDirectory ? `, workingDirectory: ${workingDirectory}` : ''}`)
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) {
+      ipcLog.error(`WORKERS_GET: Workspace not found: ${workspaceId}`)
+      return []
+    }
+    const { loadAllWorkers } = await import('@craft-agent/shared/workers')
+    const workers = loadAllWorkers(workspace.rootPath, workingDirectory)
+    ipcLog.info(`WORKERS_GET: Loaded ${workers.length} workers from ${workspace.rootPath}`)
+    return workers
+  })
+
+  // ============================================================
   // Status Management (Workspace-scoped)
   // ============================================================
 

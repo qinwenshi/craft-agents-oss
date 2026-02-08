@@ -444,11 +444,13 @@ export function handleUserMessage(
   let updatedMessages: Message[]
 
   if (existingIndex >= 0) {
-    // Update existing message - remove isPending, add isQueued if status is 'queued'
+    // Update existing message with backend-authoritative fields (badges, attachments, etc.).
+    // Keep optimistic insertion order while syncing canonical metadata from main process.
     updatedMessages = session.messages.map((m, i) => {
       if (i === existingIndex) {
         return {
           ...m,
+          ...message,
           id: message.id,  // Use backend's ID as canonical
           isPending: false,
           isQueued: status === 'queued',

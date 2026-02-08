@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useTheme } from '@/hooks/useTheme'
 import type { ThemeOverrides } from '@config/theme'
 import { useSetAtom, useStore, useAtomValue } from 'jotai'
-import type { Session, Workspace, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, TodoState, NewChatActionParams, ContentBadge } from '../shared/types'
+import type { Session, Workspace, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, TodoState, NewChatActionParams, ContentBadge, WorkerInvocationOptions } from '../shared/types'
 import type { SessionOptions, SessionOptionUpdates } from './hooks/useSessionOptions'
 import { defaultSessionOptions, mergeSessionOptions } from './hooks/useSessionOptions'
 import { generateMessageId } from '../shared/types'
@@ -42,7 +42,14 @@ import {
 } from '@/atoms/sessions'
 import { sourcesAtom } from '@/atoms/sources'
 import { skillsAtom } from '@/atoms/skills'
-import { extractBadges } from '@/lib/mentions'
+import { workersAtom } from '@/atoms/workers'
+import { extractBadges, parseMentions } from '@/lib/mentions'
+import {
+  resolveWorkerInvocation,
+  buildWorkerInvocationMessage,
+  buildWorkerMentionMessage,
+  formatWorkerCommandBadgeLabel,
+} from '@craft-agent/shared/workers/resolver'
 import { getDefaultStore } from 'jotai'
 import {
   ShikiThemeProvider,
@@ -215,9 +222,10 @@ export default function App() {
   // Notifications enabled state (from app settings)
   const [notificationsEnabled, setNotificationsEnabled] = useState(true)
 
-  // Sources and skills for badge extraction
+  // Sources/skills/workers for message enrichment and badge extraction
   const sources = useAtomValue(sourcesAtom)
   const skills = useAtomValue(skillsAtom)
+  const workers = useAtomValue(workersAtom)
 
   // Compute if app is fully ready (all data loaded)
   const isFullyReady = appState === 'ready' && sessionsLoaded
@@ -803,27 +811,102 @@ export default function App() {
       // Step 3: Check if ultrathink is enabled for this session
       const isUltrathink = sessionOptions.get(sessionId)?.ultrathinkEnabled ?? false
 
-      // Step 4: Extract badges from mentions (sources/skills) with embedded icons
+      const skillMentionSlugs = skills.map((skill) => skill.slug)
+      const sourceMentionSlugs = sources.map((source) => source.config.slug)
+      const workerMentionSlugs = workers.map((worker) => worker.slug)
+      const parsedMentions = parseMentions(
+        message,
+        skillMentionSlugs,
+        sourceMentionSlugs,
+        workerMentionSlugs
+      )
+      const mentionedWorkerSlug = parsedMentions.workers[0]
+
+      // Step 4: Extract badges from mentions (sources/skills/workers) with embedded icons
       // Badges are self-contained for display in UserMessageBubble and viewer
       // Merge with any externally provided badges (e.g., from EditPopover context badges)
       // Use workspace slug (not UUID) for skill qualification - SDK expects "workspaceSlug:skillSlug"
       const mentionBadges: ContentBadge[] = windowWorkspaceSlug
-        ? extractBadges(message, skills, sources, windowWorkspaceSlug)
+        ? extractBadges(message, skills, sources, workers, windowWorkspaceSlug)
         : []
       const badges: ContentBadge[] = [...(externalBadges || []), ...mentionBadges]
+      let workerInvocationOptions: WorkerInvocationOptions | undefined
+      let resolvedSkillSlugs = skillSlugs ? [...skillSlugs] : []
 
-      // Step 4.1: Detect SDK slash commands (e.g., /compact) and create command badges
-      // This makes /compact render as an inline badge rather than raw text
-      const commandMatch = message.match(/^\/([a-z]+)(\s|$)/i)
-      if (commandMatch && commandMatch[1].toLowerCase() === 'compact') {
-        const commandText = commandMatch[0].trimEnd() // "/compact" without trailing space
+      // Step 4.1: Detect SDK slash commands (e.g., /compact) and create command badges.
+      // This makes slash commands render as inline badges rather than raw text.
+      const compactMatch = message.match(/^\s*(\/compact)(?:\s|$)/i)
+      if (compactMatch) {
+        const commandText = compactMatch[1]
+        const commandStart = message.search(/[^\s]/)
+        const start = commandStart < 0 ? 0 : commandStart
         badges.unshift({
           type: 'command',
           label: 'Compact',
           rawText: commandText,
-          start: 0,
-          end: commandText.length,
+          start,
+          end: start + commandText.length,
         })
+      } else {
+        // Resolve worker command plugins (e.g., /analyze) from loaded WORKER.md/README.md profiles.
+        const invocation = resolveWorkerInvocation(message, workers, {
+          reservedCommands: ['/compact'],
+        })
+        if (invocation) {
+          badges.unshift({
+            type: 'command',
+            label: formatWorkerCommandBadgeLabel(invocation),
+            rawText: invocation.rawCommandText,
+            start: invocation.commandStart,
+            end: invocation.commandEnd,
+          })
+
+          const transformedMessage = buildWorkerInvocationMessage(invocation, {
+            workspaceSlug: windowWorkspaceSlug ?? undefined,
+          })
+          workerInvocationOptions = {
+            workerSlug: invocation.worker.slug,
+            workerName: invocation.worker.metadata.name,
+            command: invocation.command.command,
+            commandDescription: invocation.command.description,
+            prompt: invocation.prompt,
+            skillSlugs: invocation.worker.skills,
+            transformedMessage,
+          }
+
+          if (invocation.worker.skills.length > 0) {
+            resolvedSkillSlugs = Array.from(new Set([
+              ...resolvedSkillSlugs,
+              ...invocation.worker.skills,
+            ]))
+          }
+        } else if (mentionedWorkerSlug) {
+          const worker = workers.find((candidate) => candidate.slug === mentionedWorkerSlug)
+          if (worker) {
+            const workerPrompt = message
+              .replace(/\[worker:[\w-]+\]\s*/g, '')
+              .trim()
+            const transformedMessage = buildWorkerMentionMessage(worker, workerPrompt, {
+              workspaceSlug: windowWorkspaceSlug ?? undefined,
+            })
+            workerInvocationOptions = {
+              workerSlug: worker.slug,
+              workerName: worker.metadata.name,
+              command: '@worker',
+              commandDescription: `[worker:${worker.slug}]`,
+              prompt: workerPrompt,
+              skillSlugs: worker.skills,
+              transformedMessage,
+            }
+
+            if (worker.skills.length > 0) {
+              resolvedSkillSlugs = Array.from(new Set([
+                ...resolvedSkillSlugs,
+                ...worker.skills,
+              ]))
+            }
+          }
+        }
       }
 
       // Step 4.2: Detect plan execution messages and create file badges
@@ -868,8 +951,9 @@ export default function App() {
       // Step 6: Send to Claude with processed attachments + stored attachments for persistence
       await window.electronAPI.sendMessage(sessionId, message, processedAttachments, storedAttachments, {
         ultrathinkEnabled: isUltrathink,
-        skillSlugs,
+        skillSlugs: resolvedSkillSlugs.length > 0 ? resolvedSkillSlugs : undefined,
         badges: badges.length > 0 ? badges : undefined,
+        workerInvocation: workerInvocationOptions,
       })
 
       // Auto-disable ultrathink after sending (single-shot activation)
@@ -891,7 +975,7 @@ export default function App() {
         ]
       }))
     }
-  }, [sessionOptions, updateSessionById, skills, sources, windowWorkspaceId])
+  }, [sessionOptions, updateSessionById, skills, sources, workers, windowWorkspaceSlug])
 
   const handleModelChange = useCallback((model: string) => {
     setCurrentModel(model)
@@ -1165,10 +1249,11 @@ export default function App() {
       // (prevents memory growth on repeated workspace switches)
       sessionDraftsRef.current.clear()
 
-      // 8. Reset sources and skills atoms to empty
+      // 8. Reset sources/skills/workers atoms to empty
       // (prevents stale data flash during workspace switch - AppShell will reload)
       store.set(sourcesAtom, [])
       store.set(skillsAtom, [])
+      store.set(workersAtom, [])
 
       // 9. Clear session atoms BEFORE navigating
       // This prevents applyNavigationState from auto-selecting a session from the old workspace.

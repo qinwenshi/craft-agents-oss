@@ -200,3 +200,45 @@ describe('stripAllMentions - skill pattern with workspace IDs', () => {
     expect(result).toBe('and')
   })
 })
+
+// ============================================================================
+// Worker Mention Tests
+// ============================================================================
+
+describe('worker mentions', () => {
+  it('parses worker mentions when worker exists', () => {
+    const result = parseMentions(
+      'Use [worker:data-analyst] to review this',
+      [],
+      [],
+      ['data-analyst', 'devops']
+    )
+    expect(result.workers).toEqual(['data-analyst'])
+  })
+
+  it('finds worker mention matches with positions', () => {
+    const matches = findMentionMatches(
+      'Hello [worker:data-analyst] world',
+      [],
+      [],
+      ['data-analyst']
+    )
+    expect(matches).toHaveLength(1)
+    expect(matches[0]).toMatchObject({
+      type: 'worker',
+      id: 'data-analyst',
+      fullMatch: '[worker:data-analyst]',
+      startIndex: 6,
+    })
+  })
+
+  it('removes a worker mention from text', () => {
+    const result = removeMention('Use [worker:data-analyst] please', 'worker', 'data-analyst')
+    expect(result).toBe('Use please')
+  })
+
+  it('strips worker mentions with stripAllMentions', () => {
+    const result = stripAllMentions('Use [worker:data-analyst] and [worker:devops] now')
+    expect(result).toBe('Use and now')
+  })
+})

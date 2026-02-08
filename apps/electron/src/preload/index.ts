@@ -311,6 +311,21 @@ const api: ElectronAPI = {
     }
   },
 
+  // Workers
+  getWorkers: (workspaceId: string, workingDirectory?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.WORKERS_GET, workspaceId, workingDirectory),
+
+  // Workers change listener (live updates when workers are added/removed/modified)
+  onWorkersChanged: (callback: (workers: import('@craft-agent/shared/workers').LoadedWorker[]) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, workers: import('@craft-agent/shared/workers').LoadedWorker[]) => {
+      callback(workers)
+    }
+    ipcRenderer.on(IPC_CHANNELS.WORKERS_CHANGED, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.WORKERS_CHANGED, handler)
+    }
+  },
+
   // Statuses change listener (live updates when statuses config or icon files change)
   onStatusesChanged: (callback: (workspaceId: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, workspaceId: string) => {

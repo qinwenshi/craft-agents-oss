@@ -517,6 +517,7 @@ Sources are external data connections. Each source has:
 **Workspace structure:**
 - Sources: \`${workspacePath}/sources/{slug}/\`
 - Skills: \`${workspacePath}/skills/{slug}/\`
+- Workers: \`${workspacePath}/workers/{slug}/\`
 - Theme: \`${workspacePath}/theme.json\`
 
 **SDK Plugin:** This workspace is mounted as a Claude Code SDK plugin. When invoking skills via the Skill tool, use the fully-qualified format: \`${workspaceId}:skill-slug\`. For example, to invoke a skill named "commit", use \`${workspaceId}:commit\`.
@@ -534,6 +535,7 @@ Read relevant context files using the Read tool - they contain architecture info
 | Sources | \`${DOC_REFS.sources}\` | BEFORE creating/modifying sources |
 | Permissions | \`${DOC_REFS.permissions}\` | BEFORE modifying ${PERMISSION_MODE_CONFIG['safe'].displayName} mode rules |
 | Skills | \`${DOC_REFS.skills}\` | BEFORE creating custom skills |
+| Workers | \`${DOC_REFS.workers}\` | BEFORE creating/modifying worker plugins |
 | Themes | \`${DOC_REFS.themes}\` | BEFORE customizing colors |
 | Statuses | \`${DOC_REFS.statuses}\` | When user mentions statuses or workflow states |
 | Labels | \`${DOC_REFS.labels}\` | BEFORE creating/modifying labels |

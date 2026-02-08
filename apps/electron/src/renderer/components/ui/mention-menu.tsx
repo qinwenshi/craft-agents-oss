@@ -3,13 +3,13 @@ import { cn } from '@/lib/utils'
 import { FadingText } from '@/components/ui/fading-text'
 import { SkillAvatar } from '@/components/ui/skill-avatar'
 import { SourceAvatar } from '@/components/ui/source-avatar'
-import type { LoadedSkill, LoadedSource, FileSearchResult } from '../../../shared/types'
+import type { LoadedSkill, LoadedSource, LoadedWorker, FileSearchResult } from '../../../shared/types'
 
 // ============================================================================
 // Types
 // ============================================================================
 
-export type MentionItemType = 'skill' | 'source' | 'file' | 'folder'
+export type MentionItemType = 'skill' | 'source' | 'worker' | 'file' | 'folder'
 
 export interface MentionItem {
   id: string
@@ -19,6 +19,7 @@ export interface MentionItem {
   // Type-specific data
   skill?: LoadedSkill
   source?: LoadedSource
+  worker?: LoadedWorker
   file?: { path: string; type: 'file' | 'directory'; relativePath: string }
 }
 
@@ -268,7 +269,7 @@ export function InlineMentionMenu({
     >
       {/* Menu header — sticky above scroll area */}
       <div className="px-3 py-1.5 text-[12px] font-medium text-muted-foreground border-b border-foreground/5">
-        Mention files, skills, sources
+        Mention workers, files, skills, sources
       </div>
 
       <div ref={listRef} className={MENU_LIST_STYLE}>
@@ -300,6 +301,13 @@ export function InlineMentionMenu({
                 {item.type === 'source' && item.source && (
                   <SourceAvatar source={item.source} size="sm" />
                 )}
+                {item.type === 'worker' && (
+                  <span className="h-4 w-4 rounded-[4px] bg-foreground/5 flex items-center justify-center text-foreground/60">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+                    </svg>
+                  </span>
+                )}
                 {item.type === 'folder' && (
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" className="text-muted-foreground">
                     <path d="M20.5 10C20.5 9.07003 20.5 8.60504 20.3978 8.22354C20.1204 7.18827 19.3117 6.37962 18.2765 6.10222C17.895 6 17.43 6 16.5 6H13.1008C12.4742 6 12.1609 6 11.8739 5.91181C11.6824 5.85298 11.5009 5.76572 11.3353 5.65295C11.0871 5.48389 10.8914 5.23926 10.5 4.75L10.4095 4.63693C10.107 4.25881 9.9558 4.06975 9.7736 3.92674C9.54464 3.74703 9.27921 3.61946 8.99585 3.55294C8.77037 3.5 8.52825 3.5 8.04402 3.5C6.60485 3.5 5.88527 3.5 5.32008 3.74178C4.61056 4.0453 4.0453 4.61056 3.74178 5.32008C3.5 5.88527 3.5 6.60485 3.5 8.04402V10M9.46502 20.5H14.535C16.9102 20.5 18.0978 20.5 18.9301 19.8113C19.7624 19.1226 19.9846 17.9559 20.429 15.6227L20.8217 13.5613C21.1358 11.9121 21.2929 11.0874 20.843 10.5437C20.393 10 19.5536 10 17.8746 10H6.12537C4.44643 10 3.60696 10 3.15704 10.5437C2.70713 11.0874 2.8642 11.9121 3.17835 13.5613L3.57099 15.6227C4.01541 17.9559 4.23763 19.1226 5.06992 19.8113C5.90221 20.5 7.08981 20.5 9.46502 20.5Z"/>
@@ -323,12 +331,12 @@ export function InlineMentionMenu({
                 </>
               ) : (
                 <>
-                  {/* Skill/source: label with type badge */}
+                  {/* Skill/source/worker: label with type badge */}
                   <div className="flex-1 min-w-0">
                     <span className="truncate block">{item.label}</span>
                   </div>
                   <span className={MENU_TYPE_BADGE}>
-                    {item.type === 'skill' ? 'Skill' : 'Source'}
+                    {item.type === 'skill' ? 'Skill' : item.type === 'worker' ? 'Worker' : 'Source'}
                   </span>
                 </>
               )}
@@ -418,6 +426,7 @@ export interface UseInlineMentionOptions {
   inputRef: React.RefObject<MentionInputElement | null>
   skills: LoadedSkill[]
   sources: LoadedSource[]
+  workers: LoadedWorker[]
   /** Base path for file search (working directory) */
   basePath?: string
   onSelect: (item: MentionItem) => void
@@ -441,6 +450,7 @@ export function useInlineMention({
   inputRef,
   skills,
   sources,
+  workers,
   basePath,
   onSelect,
   workspaceId,
@@ -471,9 +481,24 @@ export function useInlineMention({
     }
   }, [])
 
-  // Build sections from available data (skills, sources, and file search results)
+  // Build sections from available data (workers, skills, sources, and file search results)
   const sections = React.useMemo((): MentionSection[] => {
     const result: MentionSection[] = []
+
+    // Workers section
+    if (workers.length > 0) {
+      result.push({
+        id: 'workers',
+        label: 'Workers',
+        items: workers.map(worker => ({
+          id: worker.slug,
+          type: 'worker' as const,
+          label: worker.metadata.name,
+          description: worker.metadata.description,
+          worker,
+        })),
+      })
+    }
 
     // Skills section
     if (skills.length > 0) {
@@ -517,7 +542,7 @@ export function useInlineMention({
     }
 
     return result
-  }, [skills, sources, fileResults])
+  }, [workers, skills, sources, fileResults])
 
   const handleInputChange = React.useCallback((value: string, cursorPosition: number) => {
     // Store current state for handleSelect
@@ -636,6 +661,8 @@ export function useInlineMention({
         // Use fully-qualified name for skills: [skill:workspaceId:slug]
         const qualifiedName = workspaceId ? `${workspaceId}:${item.id}` : item.id
         mentionText = `[skill:${qualifiedName}] `
+      } else if (item.type === 'worker') {
+        mentionText = `[worker:${item.id}] `
       } else if (item.type === 'source') {
         mentionText = `[source:${item.id}] `
       } else if (item.type === 'file') {

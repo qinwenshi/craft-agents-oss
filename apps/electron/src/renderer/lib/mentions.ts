@@ -4,13 +4,14 @@
  * Mention types:
  * - Skills:  [skill:slug]
  * - Sources: [source:slug]
+ * - Workers: [worker:slug]
  *
  * Bracket syntax allows mentions anywhere in text without word boundaries.
  */
 
 import type { ContentBadge } from '@craft-agent/core'
 import type { MentionItemType } from '@/components/ui/mention-menu'
-import type { LoadedSkill, LoadedSource } from '../../shared/types'
+import type { LoadedSkill, LoadedSource, LoadedWorker } from '../../shared/types'
 import { getSourceIconSync, getSkillIconSync } from './icon-cache'
 
 // ============================================================================
@@ -30,6 +31,8 @@ export interface ParsedMentions {
   skills: string[]
   /** Source slugs mentioned via @src:slug */
   sources: string[]
+  /** Worker slugs mentioned via [worker:slug] */
+  workers: string[]
   /** File paths mentioned via [file:path] */
   files: string[]
   /** Folder paths mentioned via [folder:path] */
@@ -55,6 +58,7 @@ export interface MentionMatch {
  * @param text - The message text to parse
  * @param availableSkillSlugs - Valid skill slugs to match against
  * @param availableSourceSlugs - Valid source slugs to match against
+ * @param availableWorkerSlugs - Valid worker slugs to match against
  * @returns Parsed mentions by type
  *
  * @example
@@ -64,11 +68,13 @@ export interface MentionMatch {
 export function parseMentions(
   text: string,
   availableSkillSlugs: string[],
-  availableSourceSlugs: string[]
+  availableSourceSlugs: string[],
+  availableWorkerSlugs: string[] = []
 ): ParsedMentions {
   const result: ParsedMentions = {
     skills: [],
     sources: [],
+    workers: [],
     files: [],
     folders: [],
   }
@@ -90,6 +96,15 @@ export function parseMentions(
     const slug = match[1]
     if (availableSkillSlugs.includes(slug) && !result.skills.includes(slug)) {
       result.skills.push(slug)
+    }
+  }
+
+  // Match worker mentions: [worker:slug]
+  const workerPattern = /\[worker:([\w-]+)\]/g
+  while ((match = workerPattern.exec(text)) !== null) {
+    const slug = match[1]
+    if (availableWorkerSlugs.includes(slug) && !result.workers.includes(slug)) {
+      result.workers.push(slug)
     }
   }
 
@@ -120,12 +135,14 @@ export function parseMentions(
  * @param text - The message text to search
  * @param availableSkillSlugs - Valid skill slugs
  * @param availableSourceSlugs - Valid source slugs
+ * @param availableWorkerSlugs - Valid worker slugs
  * @returns Array of mention matches with positions
  */
 export function findMentionMatches(
   text: string,
   availableSkillSlugs: string[],
-  availableSourceSlugs: string[]
+  availableSourceSlugs: string[],
+  availableWorkerSlugs: string[] = []
 ): MentionMatch[] {
   const matches: MentionMatch[] = []
 
@@ -152,6 +169,20 @@ export function findMentionMatches(
     if (availableSkillSlugs.includes(slug)) {
       matches.push({
         type: 'skill',
+        id: slug,
+        fullMatch: match[1],
+        startIndex: match.index,
+      })
+    }
+  }
+
+  // Match worker mentions: [worker:slug]
+  const workerPattern = /(\[worker:([\w-]+)\])/g
+  while ((match = workerPattern.exec(text)) !== null) {
+    const slug = match[2]
+    if (availableWorkerSlugs.includes(slug)) {
+      matches.push({
+        type: 'worker',
         id: slug,
         fullMatch: match[1],
         startIndex: match.index,
@@ -200,6 +231,9 @@ export function removeMention(text: string, type: MentionItemType, id: string): 
     case 'source':
       pattern = new RegExp(`\\[source:${escapeRegExp(id)}\\]`, 'g')
       break
+    case 'worker':
+      pattern = new RegExp(`\\[worker:${escapeRegExp(id)}\\]`, 'g')
+      break
     case 'file':
       pattern = new RegExp(`\\[file:${escapeRegExp(id)}\\]`, 'g')
       break
@@ -231,6 +265,8 @@ export function stripAllMentions(text: string): string {
     .replace(/\[source:[\w-]+\]/g, '')
     // Remove [skill:slug] or [skill:workspaceId:slug]
     .replace(new RegExp(`\\[skill:(?:${WS_ID_CHARS}+:)?[\\w-]+\\]`, 'g'), '')
+    // Remove [worker:slug]
+    .replace(/\[worker:[\w-]+\]/g, '')
     // Remove [file:path]
     .replace(/\[file:[^\]]+\]/g, '')
     // Remove [folder:path]
@@ -245,10 +281,11 @@ export function stripAllMentions(text: string): string {
 export function hasMentions(
   text: string,
   availableSkillSlugs: string[],
-  availableSourceSlugs: string[]
+  availableSourceSlugs: string[],
+  availableWorkerSlugs: string[] = []
 ): boolean {
-  const mentions = parseMentions(text, availableSkillSlugs, availableSourceSlugs)
-  return mentions.skills.length > 0 || mentions.sources.length > 0 || mentions.files.length > 0 || mentions.folders.length > 0
+  const mentions = parseMentions(text, availableSkillSlugs, availableSourceSlugs, availableWorkerSlugs)
+  return mentions.skills.length > 0 || mentions.sources.length > 0 || mentions.workers.length > 0 || mentions.files.length > 0 || mentions.folders.length > 0
 }
 
 // ============================================================================
@@ -286,6 +323,7 @@ export function stripSkillMentions(text: string): string {
  * @param text - Message text with mentions
  * @param skills - Available skills (for label lookup)
  * @param sources - Available sources (for label lookup)
+ * @param workers - Available workers (for label lookup)
  * @param workspaceId - Workspace ID (for icon lookup)
  * @returns Array of ContentBadge objects
  */
@@ -293,34 +331,45 @@ export function extractBadges(
   text: string,
   skills: LoadedSkill[],
   sources: LoadedSource[],
+  workers: LoadedWorker[] = [],
   workspaceId: string
 ): ContentBadge[] {
   const skillSlugs = skills.map(s => s.slug)
   const sourceSlugs = sources.map(s => s.config.slug)
-  const matches = findMentionMatches(text, skillSlugs, sourceSlugs)
+  const workerSlugs = workers.map(w => w.slug)
+  const matches = findMentionMatches(text, skillSlugs, sourceSlugs, workerSlugs)
 
   return matches.map(match => {
     let label = match.id
     let iconDataUrl: string | undefined
     let filePath: string | undefined
+    let badgeType: ContentBadge['type'] = 'source'
 
     if (match.type === 'skill') {
+      badgeType = 'skill'
       const skill = skills.find(s => s.slug === match.id)
       label = skill?.metadata.name || match.id
 
       // Get cached icon as data URL (preserves mime type for SVG, PNG, etc.)
       iconDataUrl = getSkillIconSync(workspaceId, match.id) ?? undefined
     } else if (match.type === 'source') {
+      badgeType = 'source'
       const source = sources.find(s => s.config.slug === match.id)
       label = source?.config.name || match.id
 
       // Get cached icon as data URL (preserves mime type for SVG, PNG, etc.)
       iconDataUrl = getSourceIconSync(workspaceId, match.id) ?? undefined
+    } else if (match.type === 'worker') {
+      badgeType = 'command'
+      const worker = workers.find(w => w.slug === match.id)
+      label = `Worker: ${worker?.metadata.name || match.id}`
     } else if (match.type === 'file') {
+      badgeType = 'file'
       // Show filename as label, full relative path stored for tooltip
       label = match.id.split('/').pop() || match.id
       filePath = match.id
     } else if (match.type === 'folder') {
+      badgeType = 'folder'
       // Show folder name as label, full relative path stored for tooltip
       label = match.id.split('/').pop() || match.id
       filePath = match.id
@@ -335,7 +384,7 @@ export function extractBadges(
     }
 
     return {
-      type: match.type as 'source' | 'skill' | 'file' | 'folder',
+      type: badgeType,
       label,
       rawText,
       iconDataUrl,

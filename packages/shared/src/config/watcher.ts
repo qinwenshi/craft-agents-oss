@@ -12,6 +12,7 @@
  * - ~/.craft-agent/workspaces/{slug}/ - Workspace directory (recursive)
  *   - sources/{slug}/config.json, guide.md, permissions.json
  *   - skills/{slug}/SKILL.md, icon.*
+ *   - workers/{slug}/WORKER.md, README.md
  *   - sessions/{id}/session.jsonl (header metadata only)
  *   - permissions.json
  */
@@ -38,9 +39,16 @@ import {
   downloadSourceIcon,
 } from '../sources/storage.ts';
 import { permissionsConfigCache, getAppPermissionsDir } from '../agent/permissions-config.ts';
-import { getWorkspacePath, getWorkspaceSourcesPath, getWorkspaceSkillsPath } from '../workspaces/storage.ts';
+import {
+  getWorkspacePath,
+  getWorkspaceSourcesPath,
+  getWorkspaceSkillsPath,
+  getWorkspaceWorkersPath,
+} from '../workspaces/storage.ts';
 import type { LoadedSkill } from '../skills/types.ts';
 import { loadSkill, loadWorkspaceSkills, skillNeedsIconDownload, downloadSkillIcon } from '../skills/storage.ts';
+import type { LoadedWorker } from '../workers/types.ts';
+import { loadWorker, loadWorkspaceWorkers } from '../workers/storage.ts';
 import {
   loadStatusConfig,
   statusNeedsIconDownload,
@@ -103,6 +111,12 @@ export interface ConfigWatcherCallbacks {
   onSkillChange?: (slug: string, skill: LoadedSkill | null) => void;
   /** Called when the skills list changes (add/remove folders) */
   onSkillsListChange?: (skills: LoadedSkill[]) => void;
+
+  // Worker callbacks
+  /** Called when a specific worker changes (null if deleted) */
+  onWorkerChange?: (slug: string, worker: LoadedWorker | null) => void;
+  /** Called when the workers list changes (add/remove folders) */
+  onWorkersListChange?: (workers: LoadedWorker[]) => void;
 
   // Permissions callbacks
   /** Called when app-level default permissions change (~/.craft-agent/permissions/default.json) */
@@ -180,12 +194,14 @@ export class ConfigWatcher {
   // Track known items for detecting adds/removes
   private knownSources: Set<string> = new Set();
   private knownSkills: Set<string> = new Set();
+  private knownWorkers: Set<string> = new Set();
   private knownThemes: Set<string> = new Set();
 
   // Computed paths
   private workspaceDir: string;
   private sourcesDir: string;
   private skillsDir: string;
+  private workersDir: string;
 
   constructor(workspaceIdOrPath: string, callbacks: ConfigWatcherCallbacks) {
     this.callbacks = callbacks;
@@ -202,6 +218,7 @@ export class ConfigWatcher {
     }
     this.sourcesDir = getWorkspaceSourcesPath(this.workspaceDir);
     this.skillsDir = getWorkspaceSkillsPath(this.workspaceDir);
+    this.workersDir = getWorkspaceWorkersPath(this.workspaceDir);
   }
 
   /**
@@ -246,12 +263,15 @@ export class ConfigWatcher {
     this.watchAppPermissionsDir();
     span.mark('watchAppPermissionsDir');
 
-    // Initial scan to populate known sources, skills, and themes
+    // Initial scan to populate known sources, skills, workers, and themes
     this.scanSources();
     span.mark('scanSources');
 
     this.scanSkills();
     span.mark('scanSkills');
+
+    this.scanWorkers();
+    span.mark('scanWorkers');
 
     this.scanAppThemes();
     span.mark('scanAppThemes');
@@ -284,6 +304,7 @@ export class ConfigWatcher {
 
     this.knownSources.clear();
     this.knownSkills.clear();
+    this.knownWorkers.clear();
     this.knownThemes.clear();
 
     debug('[ConfigWatcher] Stopped');
@@ -390,6 +411,24 @@ export class ConfigWatcher {
       } else if (file && /^icon\.(svg|png|jpg|jpeg)$/i.test(file)) {
         // Icon file changes also trigger a skill change (to update iconPath)
         this.debounce(`skill-icon:${slug}`, () => this.handleSkillChange(slug));
+      }
+      return;
+    }
+
+    // Workers changes: workers/{slug}/...
+    if (parts[0] === 'workers' && parts.length >= 2) {
+      const slug = parts[1]!; // Safe: checked parts.length >= 2
+      const file = parts[2];
+
+      // Directory-level changes (new/removed worker folders)
+      if (parts.length === 2) {
+        this.debounce('workers-dir', () => this.handleWorkersDirChange());
+        return;
+      }
+
+      // File-level changes
+      if (file === 'WORKER.md' || file === 'README.md') {
+        this.debounce(`worker:${slug}`, () => this.handleWorkerChange(slug));
       }
       return;
     }
@@ -737,6 +776,110 @@ export class ConfigWatcher {
           debug('[ConfigWatcher] Icon download failed for skill:', slug, error);
         });
     }
+  }
+
+  // ============================================================
+  // Workers Handlers
+  // ============================================================
+
+  /**
+   * Scan workers directory to populate known workers
+   */
+  private scanWorkers(): void {
+    if (!existsSync(this.workersDir)) {
+      mkdirSync(this.workersDir, { recursive: true });
+      return;
+    }
+
+    try {
+      const entries = readdirSync(this.workersDir);
+
+      for (const entry of entries) {
+        const entryPath = join(this.workersDir, entry);
+        if (statSync(entryPath).isDirectory()) {
+          this.knownWorkers.add(entry);
+        }
+      }
+
+      debug('[ConfigWatcher] Known workers:', Array.from(this.knownWorkers));
+    } catch (error) {
+      debug('[ConfigWatcher] Error scanning workers:', error);
+    }
+  }
+
+  /**
+   * Handle workers directory change (add/remove folders)
+   */
+  private handleWorkersDirChange(): void {
+    debug('[ConfigWatcher] Workers directory changed');
+
+    if (!existsSync(this.workersDir)) {
+      // Directory was deleted
+      const removed = Array.from(this.knownWorkers);
+      this.knownWorkers.clear();
+
+      for (const slug of removed) {
+        this.callbacks.onWorkerChange?.(slug, null);
+      }
+
+      this.callbacks.onWorkersListChange?.([]);
+      return;
+    }
+
+    try {
+      const entries = readdirSync(this.workersDir);
+      const currentFolders = new Set<string>();
+
+      for (const entry of entries) {
+        const entryPath = join(this.workersDir, entry);
+        if (statSync(entryPath).isDirectory()) {
+          currentFolders.add(entry);
+        }
+      }
+
+      // Find added folders
+      for (const folder of currentFolders) {
+        if (!this.knownWorkers.has(folder)) {
+          debug('[ConfigWatcher] New worker folder:', folder);
+          this.knownWorkers.add(folder);
+
+          const worker = loadWorker(this.workspaceDir, folder);
+          if (worker) {
+            this.callbacks.onWorkerChange?.(folder, worker);
+          }
+        }
+      }
+
+      // Find removed folders
+      for (const folder of this.knownWorkers) {
+        if (!currentFolders.has(folder)) {
+          debug('[ConfigWatcher] Removed worker folder:', folder);
+          this.knownWorkers.delete(folder);
+          this.callbacks.onWorkerChange?.(folder, null);
+        }
+      }
+
+      // Notify list change
+      const allWorkers = loadWorkspaceWorkers(this.workspaceDir);
+      this.callbacks.onWorkersListChange?.(allWorkers);
+    } catch (error) {
+      debug('[ConfigWatcher] Error handling workers dir change:', error);
+      this.callbacks.onError?.('workers/', error as Error);
+    }
+  }
+
+  /**
+   * Handle worker markdown change.
+   */
+  private handleWorkerChange(slug: string): void {
+    debug('[ConfigWatcher] Worker changed:', slug);
+    const worker = loadWorker(this.workspaceDir, slug);
+    if (worker) {
+      this.knownWorkers.add(slug);
+    } else {
+      this.knownWorkers.delete(slug);
+    }
+    this.callbacks.onWorkerChange?.(slug, worker);
   }
 
   // ============================================================

@@ -17,7 +17,7 @@ import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import { DropdownMenu, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { StyledDropdownMenuContent, StyledDropdownMenuItem, StyledDropdownMenuSeparator } from '@/components/ui/styled-dropdown'
 import { cn } from '@/lib/utils'
-import type { AvailableApp } from '../../../shared/types'
+import type { AvailableApp } from '../../shared/types'
 import { useAppShellContext, usePendingPermission, usePendingCredential, useSessionOptionsFor, useSession as useSessionData } from '@/context/AppShellContext'
 import { rendererPerf } from '@/lib/perf'
 import { routes } from '@/lib/navigate'
@@ -50,6 +50,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     onInputChange,
     enabledSources,
     skills,
+    workers,
     labels,
     onSessionLabelsChange,
     enabledModes,
@@ -532,6 +533,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
                 onInputChange={handleInputChange}
                 sources={enabledSources}
                 skills={skills}
+                workers={workers}
                 todoStates={todoStates}
                 onTodoStateChange={handleTodoStateChange}
                 workspaceId={activeWorkspaceId || undefined}
@@ -603,6 +605,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
             onInputChange={handleInputChange}
             sources={enabledSources}
             skills={skills}
+            workers={workers}
             labels={labels}
             onLabelsChange={(newLabels) => onSessionLabelsChange?.(sessionId, newLabels)}
             todoStates={todoStates}

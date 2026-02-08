@@ -50,6 +50,10 @@ export type { LoadedSource, FolderSourceConfig, SourceConnectionStatus };
 import type { LoadedSkill, SkillMetadata } from '@craft-agent/shared/skills/types';
 export type { LoadedSkill, SkillMetadata };
 
+// Import worker types
+import type { LoadedWorker, WorkerMetadata, WorkerCommand } from '@craft-agent/shared/workers/types';
+export type { LoadedWorker, WorkerMetadata, WorkerCommand };
+
 
 /**
  * File/directory entry in a skill folder
@@ -469,6 +473,23 @@ export type SessionEvent =
   | { type: 'usage_update'; sessionId: string; tokenUsage: { inputTokens: number; contextWindow?: number } }
 
 // Options for sendMessage
+export interface WorkerInvocationOptions {
+  /** Worker slug that resolved this command */
+  workerSlug: string
+  /** Worker display name */
+  workerName: string
+  /** Command token (e.g. "/analyze" or "@worker") */
+  command: string
+  /** Optional command description from worker docs */
+  commandDescription?: string
+  /** User prompt after the slash command */
+  prompt: string
+  /** Skills declared by the worker */
+  skillSlugs?: string[]
+  /** Message transformed with worker context, sent to the model */
+  transformedMessage: string
+}
+
 export interface SendMessageOptions {
   /** Enable ultrathink mode for extended reasoning */
   ultrathinkEnabled?: boolean
@@ -476,6 +497,8 @@ export interface SendMessageOptions {
   skillSlugs?: string[]
   /** Content badges for inline display (sources, skills with embedded icons) */
   badges?: import('@craft-agent/core').ContentBadge[]
+  /** Resolved worker command context (if message starts with worker slash command) */
+  workerInvocation?: WorkerInvocationOptions
 }
 
 // =============================================================================
@@ -692,6 +715,10 @@ export const IPC_CHANNELS = {
   SKILLS_OPEN_EDITOR: 'skills:openEditor',
   SKILLS_OPEN_FINDER: 'skills:openFinder',
   SKILLS_CHANGED: 'skills:changed',
+
+  // Workers (workspace-scoped)
+  WORKERS_GET: 'workers:get',
+  WORKERS_CHANGED: 'workers:changed',
 
   // Status management (workspace-scoped)
   STATUSES_LIST: 'statuses:list',
@@ -997,6 +1024,11 @@ export interface ElectronAPI {
 
   // Skills change listener (live updates when skills are added/removed/modified)
   onSkillsChanged(callback: (skills: LoadedSkill[]) => void): () => void
+
+  // Workers
+  getWorkers(workspaceId: string, workingDirectory?: string): Promise<LoadedWorker[]>
+  // Workers change listener (live updates when workers are added/removed/modified)
+  onWorkersChanged(callback: (workers: LoadedWorker[]) => void): () => void
 
   // Statuses (workspace-scoped)
   listStatuses(workspaceId: string): Promise<import('@craft-agent/shared/statuses').StatusConfig[]>

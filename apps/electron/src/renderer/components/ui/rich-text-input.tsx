@@ -8,7 +8,7 @@ import {
   getSkillIconSync,
   EMOJI_ICON_PREFIX,
 } from '@/lib/icon-cache'
-import type { LoadedSkill, LoadedSource } from '../../../shared/types'
+import type { LoadedSkill, LoadedSource, LoadedWorker } from '../../../shared/types'
 import type { MentionItemType } from './mention-menu'
 
 // ============================================================================
@@ -29,6 +29,8 @@ export interface RichTextInputProps extends Omit<React.HTMLAttributes<HTMLDivEle
   skills?: LoadedSkill[]
   /** Available sources for mention parsing */
   sources?: LoadedSource[]
+  /** Available workers for mention parsing */
+  workers?: LoadedWorker[]
   /** Workspace ID for avatars */
   workspaceId?: string
   /** Whether the input is disabled */
@@ -125,6 +127,8 @@ function renderBadgeHTML(
   } else {
     // Fall back to generic SVG icon based on type
     if (type === 'skill') {
+      iconHtml = `<span class="h-[12px] w-[12px] rounded-[2px] bg-foreground/5 flex items-center justify-center text-foreground/50 shrink-0">${SKILL_ICON_SVG}</span>`
+    } else if (type === 'worker') {
       iconHtml = `<span class="h-[12px] w-[12px] rounded-[2px] bg-foreground/5 flex items-center justify-center text-foreground/50 shrink-0">${SKILL_ICON_SVG}</span>`
     } else if (type === 'source') {
       iconHtml = `<span class="h-[12px] w-[12px] rounded-[2px] bg-foreground/5 flex items-center justify-center text-foreground/50 shrink-0">${SOURCE_ICON_SVG}</span>`
@@ -332,13 +336,15 @@ function textToHTML(
   text: string,
   skills: LoadedSkill[],
   sources: LoadedSource[],
+  workers: LoadedWorker[],
   workspaceId?: string
 ): string {
   if (!text) return ''
 
   const skillSlugs = skills.map(s => s.slug)
   const sourceSlugs = sources.map(s => s.config.slug)
-  const matches = findMentionMatches(text, skillSlugs, sourceSlugs)
+  const workerSlugs = workers.map(w => w.slug)
+  const matches = findMentionMatches(text, skillSlugs, sourceSlugs, workerSlugs)
 
   // Escape HTML in text
   const escapeHTML = (str: string) => str
@@ -374,6 +380,8 @@ function textToHTML(
     if (match.type === 'skill') {
       skill = skills.find(s => s.slug === match.id)
       label = skill?.metadata.name || match.id
+    } else if (match.type === 'worker') {
+      label = workers.find(w => w.slug === match.id)?.metadata.name || match.id
     } else if (match.type === 'source') {
       source = sources.find(s => s.config.slug === match.id)
       label = source?.config.name || match.id
@@ -413,8 +421,13 @@ function textToHTML(
 // Check if mentions have changed (for determining if we need to re-render HTML)
 // ============================================================================
 
-function getMentionSignature(text: string, skillSlugs: string[], sourceSlugs: string[]): string {
-  const matches = findMentionMatches(text, skillSlugs, sourceSlugs)
+function getMentionSignature(
+  text: string,
+  skillSlugs: string[],
+  sourceSlugs: string[],
+  workerSlugs: string[]
+): string {
+  const matches = findMentionMatches(text, skillSlugs, sourceSlugs, workerSlugs)
   return matches.map(m => `${m.type}:${m.id}:${m.startIndex}`).join('|')
 }
 
@@ -481,6 +494,7 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
       placeholder = 'Type a message...',
       skills = [],
       sources = [],
+      workers = [],
       workspaceId,
       disabled = false,
       className,
@@ -508,6 +522,7 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
 
     const skillSlugs = React.useMemo(() => skills.map(s => s.slug), [skills])
     const sourceSlugs = React.useMemo(() => sources.map(s => s.config.slug), [sources])
+    const workerSlugs = React.useMemo(() => workers.map(w => w.slug), [workers])
 
     // Preload icons for sources and skills
     React.useEffect(() => {
@@ -579,12 +594,12 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
       cursorPositionRef.current = cursorPos
 
       // Check if mentions changed - if so, we need to re-render HTML
-      const newSignature = getMentionSignature(newText, skillSlugs, sourceSlugs)
+      const newSignature = getMentionSignature(newText, skillSlugs, sourceSlugs, workerSlugs)
       if (newSignature !== lastMentionSignatureRef.current) {
         lastMentionSignatureRef.current = newSignature
         // Re-render with badges
         isInternalUpdate.current = true
-        const html = textToHTML(newText, skills, sources, workspaceId)
+        const html = textToHTML(newText, skills, sources, workers, workspaceId)
         divRef.current.innerHTML = html || '<br>' // Empty contenteditable needs a BR
         // Restore cursor
         setCursorPosition(divRef.current, cursorPos)
@@ -593,7 +608,7 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
 
       onChange(newText)
       onInput?.(newText, cursorPos)
-    }, [onChange, onInput, skills, sources, skillSlugs, sourceSlugs, workspaceId])
+    }, [onChange, onInput, skills, sources, workers, skillSlugs, sourceSlugs, workerSlugs, workspaceId])
 
     // Handle composition (IME)
     const handleCompositionStart = React.useCallback(() => {
@@ -666,9 +681,9 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
 
       // External value change - update content
       lastValueRef.current = value
-      lastMentionSignatureRef.current = getMentionSignature(value, skillSlugs, sourceSlugs)
+      lastMentionSignatureRef.current = getMentionSignature(value, skillSlugs, sourceSlugs, workerSlugs)
 
-      const html = textToHTML(value, skills, sources, workspaceId)
+      const html = textToHTML(value, skills, sources, workers, workspaceId)
       divRef.current.innerHTML = html || '<br>'
 
       // Restore cursor position after innerHTML update.
@@ -684,13 +699,13 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
         setCursorPosition(divRef.current, cursorPos)
         pendingCursorRef.current = null // Clear after use
       }
-    }, [value, skills, sources, skillSlugs, sourceSlugs, workspaceId])
+    }, [value, skills, sources, workers, skillSlugs, sourceSlugs, workerSlugs, workspaceId])
 
     // Initialize content on mount
     React.useEffect(() => {
       if (!divRef.current) return
-      lastMentionSignatureRef.current = getMentionSignature(value, skillSlugs, sourceSlugs)
-      const html = textToHTML(value, skills, sources, workspaceId)
+      lastMentionSignatureRef.current = getMentionSignature(value, skillSlugs, sourceSlugs, workerSlugs)
+      const html = textToHTML(value, skills, sources, workers, workspaceId)
       divRef.current.innerHTML = html || '<br>'
       lastValueRef.current = value
     }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -749,9 +764,9 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
 
     // Check if value contains any mentions (badges) to adjust line height
     const hasMentions = React.useMemo(() => {
-      const mentions = parseMentions(value, skillSlugs, sourceSlugs)
-      return mentions.skills.length > 0 || mentions.sources.length > 0 || mentions.files.length > 0 || mentions.folders.length > 0
-    }, [value, skillSlugs, sourceSlugs])
+      const mentions = parseMentions(value, skillSlugs, sourceSlugs, workerSlugs)
+      return mentions.skills.length > 0 || mentions.sources.length > 0 || mentions.workers.length > 0 || mentions.files.length > 0 || mentions.folders.length > 0
+    }, [value, skillSlugs, sourceSlugs, workerSlugs])
 
     return (
       <div className="relative">

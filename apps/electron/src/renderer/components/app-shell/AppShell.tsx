@@ -79,10 +79,11 @@ import { useFocusZone, useGlobalShortcuts } from "@/hooks/keyboard"
 import { useFocusContext } from "@/context/FocusContext"
 import { getSessionTitle } from "@/utils/session"
 import { useSetAtom } from "jotai"
-import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter } from "../../../shared/types"
+import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, LoadedWorker, PermissionMode, SourceFilter } from "../../../shared/types"
 import { sessionMetaMapAtom, type SessionMeta } from "@/atoms/sessions"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
+import { workersAtom } from "@/atoms/workers"
 import { type TodoStateId, type TodoState, statusConfigsToTodoStates } from "@/config/todo-states"
 import { useStatuses } from "@/hooks/useStatuses"
 import { useLabels } from "@/hooks/useLabels"
@@ -769,6 +770,14 @@ function AppShellContent({
   React.useEffect(() => {
     setSkillsAtom(skills)
   }, [skills, setSkillsAtom])
+
+  // Workers state (workspace-scoped)
+  const [workers, setWorkers] = React.useState<LoadedWorker[]>([])
+  // Sync workers to atom for message send pipeline
+  const setWorkersAtom = useSetAtom(workersAtom)
+  React.useEffect(() => {
+    setWorkersAtom(workers)
+  }, [workers, setWorkersAtom])
   // Whether local MCP servers are enabled (affects stdio source status)
   const [localMcpEnabled, setLocalMcpEnabled] = React.useState(true)
 
@@ -855,6 +864,14 @@ function AppShellContent({
   React.useEffect(() => {
     const cleanup = window.electronAPI.onSkillsChanged?.((updatedSkills) => {
       setSkills(updatedSkills || [])
+    })
+    return cleanup
+  }, [])
+
+  // Subscribe to live worker updates (when workers are added/removed dynamically)
+  React.useEffect(() => {
+    const cleanup = window.electronAPI.onWorkersChanged?.((updatedWorkers) => {
+      setWorkers(updatedWorkers || [])
     })
     return cleanup
   }, [])
@@ -1196,6 +1213,17 @@ function AppShellContent({
     })
   }, [activeWorkspaceId, activeSessionWorkingDirectory])
 
+  // Reload workers when active session's workingDirectory changes (for project-level workers)
+  // Workers are loaded from: global (~/.agents/workers/), workspace, and project ({workingDirectory}/.agents/workers/)
+  React.useEffect(() => {
+    if (!activeWorkspaceId) return
+    window.electronAPI.getWorkers(activeWorkspaceId, activeSessionWorkingDirectory).then((loaded) => {
+      setWorkers(loaded || [])
+    }).catch(err => {
+      console.error('[Chat] Failed to load workers:', err)
+    })
+  }, [activeWorkspaceId, activeSessionWorkingDirectory])
+
   // Filter session metadata by active workspace
   // Also exclude hidden sessions (mini-agent sessions) from all counts and lists
   const workspaceSessionMetas = useMemo(() => {
@@ -1455,6 +1483,7 @@ function AppShellContent({
     textareaRef: chatInputRef,
     enabledSources: sources,
     skills,
+    workers,
     labels: labelConfigs,
     onSessionLabelsChange: handleSessionLabelsChange,
     enabledModes,
@@ -1467,7 +1496,7 @@ function AppShellContent({
     isSearchModeActive: searchActive,
     chatDisplayRef,
     onChatMatchInfoChange: handleChatMatchInfoChange,
-  }), [contextValue, handleDeleteSession, sources, skills, labelConfigs, handleSessionLabelsChange, enabledModes, effectiveTodoStates, statusEnabled, handleSessionSourcesChange, rightSidebarOpenButton, searchActive, searchQuery, handleChatMatchInfoChange])
+  }), [contextValue, handleDeleteSession, sources, skills, workers, labelConfigs, handleSessionLabelsChange, enabledModes, effectiveTodoStates, statusEnabled, handleSessionSourcesChange, rightSidebarOpenButton, searchActive, searchQuery, handleChatMatchInfoChange])
 
   // Persist expanded folders to localStorage (workspace-scoped)
   React.useEffect(() => {
